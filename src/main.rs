@@ -1,4 +1,4 @@
-use alloy::primitives::{keccak256, Address, U256};
+use alloy::primitives::{address, keccak256, Address, U256};
 use alloy_rlp::Encodable;
 use hex::decode as hex_decode;
 use reqwest::Client;
@@ -174,6 +174,165 @@ impl Eip1559Transaction {
     }
 }
 
+#[derive(Debug)]
+struct Eip7702Transaction {
+    chain_id: u64,
+    nonce: U256,
+    max_priority_fee_per_gas: U256,
+    max_fee_per_gas: U256,
+    gas_limit: U256,
+    to: Option<Address>,
+    value: U256,
+    data: Vec<u8>,
+    access_list: Vec<(Address, Vec<U256>)>, // or a custom struct
+    authorization_list: Vec<Authorization7702>,
+
+    // Signature
+    y_parity: u8, // 0 or 1
+    r: U256,
+    s: U256,
+}
+
+impl Eip7702Transaction {
+    fn rlp_internal(&self) -> Vec<u8> {
+        let mut buffer = Vec::<u8>::new();
+
+        self.chain_id.encode(&mut buffer);
+        self.nonce.encode(&mut buffer);
+        self.max_priority_fee_per_gas.encode(&mut buffer);
+        self.max_fee_per_gas.encode(&mut buffer);
+        self.gas_limit.encode(&mut buffer);
+
+        // If `to` is `None`, encode as empty bytes
+        match self.to {
+            Some(to_addr) => to_addr.encode(&mut buffer),
+            None => (&[] as &[u8]).encode(&mut buffer),
+        };
+        self.value.encode(&mut buffer);
+        self.data.as_slice().encode(&mut buffer);
+
+        // access list - TODO.
+        let aa1 = alloy_rlp::Header {
+            list: true,
+            payload_length: 0,
+        };
+        aa1.encode(&mut buffer);
+
+        // authorization list - TODO.
+        //let aa1 = alloy_rlp::Header {
+        //    list: true,
+        //    payload_length: 0,
+        //};
+        //aa1.encode(&mut buffer);
+
+        self.authorization_list.encode(&mut buffer);
+
+        buffer
+    }
+
+    /// RLP for the *unsigned* portion, which you then keccak256 and sign
+    fn rlp_encode_unsigned(&self) -> Vec<u8> {
+        let mut buffer = self.rlp_internal();
+        let aa = alloy_rlp::Header {
+            list: true,
+            payload_length: buffer.len(),
+        };
+        let mut new_buffer = Vec::<u8>::new();
+        // this is crucial here.
+        new_buffer.push(0x04);
+
+        aa.encode(&mut new_buffer);
+        new_buffer.append(&mut buffer);
+        new_buffer
+    }
+
+    fn rlp_encode_signed(&self) -> Vec<u8> {
+        let mut buffer = self.rlp_internal();
+        self.y_parity.encode(&mut buffer);
+        self.r.encode(&mut buffer);
+        self.s.encode(&mut buffer);
+
+        let aa = alloy_rlp::Header {
+            list: true,
+            payload_length: buffer.len(),
+        };
+        let mut new_buffer = Vec::<u8>::new();
+        new_buffer.push(0x04);
+        aa.encode(&mut new_buffer);
+        new_buffer.append(&mut buffer);
+        new_buffer
+    }
+}
+
+#[derive(Debug)]
+struct Authorization7702 {
+    chain_id: u64,
+    address: Address,
+    nonce: U256,
+    y_parity: u8, // 0 or 1
+    r: U256,
+    s: U256,
+}
+
+impl Authorization7702 {
+    pub fn new(chain_id: u64, address: Address, nonce: U256, private_key_hex: String) -> Self {
+        let mut buffer = Vec::<u8>::new();
+        chain_id.encode(&mut buffer);
+        address.encode(&mut buffer);
+        nonce.encode(&mut buffer);
+        let aa = alloy_rlp::Header {
+            list: true,
+            payload_length: buffer.len(),
+        };
+        let mut new_buffer = Vec::<u8>::new();
+        // this is crucial here - this is 'MAGIC' part.
+        new_buffer.push(0x05);
+
+        aa.encode(&mut new_buffer);
+        new_buffer.append(&mut buffer);
+
+        let message_hash = keccak256(&new_buffer);
+        let msg = secp256k1::Message::from_digest_slice(&message_hash.as_slice()).unwrap();
+        let secret_key =
+            SecretKey::from_slice(&hex_decode(private_key_hex.trim_start_matches("0x")).unwrap())
+                .expect("invalid private key bytes");
+        let signature = Secp256k1::new().sign_ecdsa_recoverable(&msg, &secret_key);
+
+        let (recovery_id, rsig) = signature.serialize_compact();
+
+        let r = bytes32_to_u256(&rsig[..32]);
+        let s = bytes32_to_u256(&rsig[32..64]);
+        let y_parity = recovery_id.to_i32() as u8; // 0 or 1
+        Self {
+            chain_id,
+            address,
+            nonce,
+            y_parity,
+            r,
+            s,
+        }
+    }
+}
+
+impl Encodable for Authorization7702 {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        let mut buffer = Vec::<u8>::new();
+
+        self.chain_id.encode(&mut buffer);
+        self.address.encode(&mut buffer);
+        self.nonce.encode(&mut buffer);
+        self.y_parity.encode(&mut buffer);
+        self.r.encode(&mut buffer);
+        self.s.encode(&mut buffer);
+        let aa = alloy_rlp::Header {
+            list: true,
+            payload_length: buffer.len(),
+        };
+        aa.encode(out);
+        out.put_slice(&buffer);
+    }
+}
+
 fn bytes32_to_u256(bytes: &[u8]) -> U256 {
     U256::from_be_bytes::<32>(bytes.try_into().expect("slice must be 32 bytes"))
 }
@@ -215,7 +374,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Nonce: {}", nonce_value);
 
-    let tx_type = "1559";
+    let tx_type = "7702";
     let chain_id = 1337;
 
     let raw_tx_hex = if tx_type == "legacy" {
@@ -265,6 +424,46 @@ async fn main() -> Result<(), Box<dyn Error>> {
             value: U256::from(1_000_000_000_000_000_000u64), // 1 ETH in wei,
             data: vec![],
             access_list: vec![],
+            y_parity: 0,
+            r: U256::ZERO,
+            s: U256::ZERO,
+        };
+        let unsigned_rlp = tx.rlp_encode_unsigned();
+        let message_hash = keccak256(&unsigned_rlp);
+        let msg = secp256k1::Message::from_digest_slice(&message_hash.as_slice())?;
+        let signature = Secp256k1::new().sign_ecdsa_recoverable(&msg, &secret_key);
+
+        let (recovery_id, rsig) = signature.serialize_compact();
+        tx.r = bytes32_to_u256(&rsig[..32]);
+        tx.s = bytes32_to_u256(&rsig[32..64]);
+        tx.y_parity = recovery_id.to_i32() as u8; // 0 or 1
+        let signed_bytes = tx.rlp_encode_signed();
+        let raw_tx_hex = format!("0x{}", hex::encode(signed_bytes));
+        println!("Raw signed TX: {}", raw_tx_hex);
+        raw_tx_hex
+    } else if tx_type == "7702" {
+        // TODO: get the nonce correctly.
+        // TODO: setup proper destination.
+        let authorization = Authorization7702::new(
+            0,
+            address!("aCB90B0A0D6715c286C6fc37fA7d4ac753c24D11"),
+            0.try_into().unwrap(),
+            "0x411bdd63dc116ba53e0e3fbe752ba21f869e272d4f544c8d545c617ce43f654e".to_string(),
+        );
+        let mut tx = Eip7702Transaction {
+            chain_id: chain_id,
+            nonce: nonce_value,
+            max_priority_fee_per_gas: U256::from(1_000_000_000u64),
+            max_fee_per_gas: U256::from(1_000_000_000u64),
+            // more gas.
+            gas_limit: U256::from(46000u64),
+            to: Some(Address::from_slice(
+                &hex_decode("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabb").unwrap(),
+            )),
+            value: U256::from(1_000_000_000_000_000_000u64), // 1 ETH in wei,
+            data: vec![],
+            access_list: vec![],
+            authorization_list: vec![authorization],
             y_parity: 0,
             r: U256::ZERO,
             s: U256::ZERO,
