@@ -92,6 +92,88 @@ impl LegacyTransaction {
     }
 }
 
+/// Minimal EIP-1559 transaction (type=2), ignoring error checks/optional fields
+#[derive(Debug)]
+struct Eip1559Transaction {
+    chain_id: u64,
+    nonce: U256,
+    max_priority_fee_per_gas: U256,
+    max_fee_per_gas: U256,
+    gas_limit: U256,
+    to: Option<Address>,
+    value: U256,
+    data: Vec<u8>,
+    access_list: Vec<(Address, Vec<U256>)>, // or a custom struct
+
+    // Signature
+    y_parity: u8, // 0 or 1
+    r: U256,
+    s: U256,
+}
+
+impl Eip1559Transaction {
+    fn rlp_internal(&self) -> Vec<u8> {
+        let mut buffer = Vec::<u8>::new();
+
+        self.chain_id.encode(&mut buffer);
+        self.nonce.encode(&mut buffer);
+        self.max_priority_fee_per_gas.encode(&mut buffer);
+        self.max_fee_per_gas.encode(&mut buffer);
+        self.gas_limit.encode(&mut buffer);
+
+        // If `to` is `None`, encode as empty bytes
+        match self.to {
+            Some(to_addr) => to_addr.encode(&mut buffer),
+            None => (&[] as &[u8]).encode(&mut buffer),
+        };
+        self.value.encode(&mut buffer);
+        self.data.as_slice().encode(&mut buffer);
+
+        // access list - TODO.
+
+        let aa1 = alloy_rlp::Header {
+            list: true,
+            payload_length: 0,
+        };
+        aa1.encode(&mut buffer);
+
+        buffer
+    }
+
+    /// RLP for the *unsigned* portion, which you then keccak256 and sign
+    fn rlp_encode_unsigned(&self) -> Vec<u8> {
+        let mut buffer = self.rlp_internal();
+        let aa = alloy_rlp::Header {
+            list: true,
+            payload_length: buffer.len(),
+        };
+        let mut new_buffer = Vec::<u8>::new();
+        // this is crucial here.
+        new_buffer.push(0x02);
+
+        aa.encode(&mut new_buffer);
+        new_buffer.append(&mut buffer);
+        new_buffer
+    }
+
+    fn rlp_encode_signed(&self) -> Vec<u8> {
+        let mut buffer = self.rlp_internal();
+        self.y_parity.encode(&mut buffer);
+        self.r.encode(&mut buffer);
+        self.s.encode(&mut buffer);
+
+        let aa = alloy_rlp::Header {
+            list: true,
+            payload_length: buffer.len(),
+        };
+        let mut new_buffer = Vec::<u8>::new();
+        new_buffer.push(0x02);
+        aa.encode(&mut new_buffer);
+        new_buffer.append(&mut buffer);
+        new_buffer
+    }
+}
+
 fn bytes32_to_u256(bytes: &[u8]) -> U256 {
     U256::from_be_bytes::<32>(bytes.try_into().expect("slice must be 32 bytes"))
 }
@@ -133,40 +215,76 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Nonce: {}", nonce_value);
 
-    let mut tx = LegacyTransaction {
-        nonce: nonce_value,
-        gas_price: U256::from(1_000_000_000u64), // 1 gwei
-        gas_limit: U256::from(21000u64),
-        to: Some(Address::from_slice(
-            &hex_decode("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
-        )),
-        value: U256::from(1_000_000_000_000_000_000u64), // 1 ETH in wei
-        data: vec![],
-        v: 0,
-        r: U256::ZERO,
-        s: U256::ZERO,
-    };
-
+    let tx_type = "1559";
     let chain_id = 1337;
 
-    // 5. Sign (EIP-155 Legacy)
-    let unsigned_rlp = tx.rlp_encode_unsigned(chain_id);
-    let message_hash = keccak256(&unsigned_rlp);
+    let raw_tx_hex = if tx_type == "legacy" {
+        let mut tx = LegacyTransaction {
+            nonce: nonce_value,
+            gas_price: U256::from(1_000_000_000u64), // 1 gwei
+            gas_limit: U256::from(21000u64),
+            to: Some(Address::from_slice(
+                &hex_decode("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
+            )),
+            value: U256::from(1_000_000_000_000_000_000u64), // 1 ETH in wei
+            data: vec![],
+            v: 0,
+            r: U256::ZERO,
+            s: U256::ZERO,
+        };
 
-    let msg = secp256k1::Message::from_digest_slice(&message_hash.as_slice())?;
-    let signature = Secp256k1::new().sign_ecdsa_recoverable(&msg, &secret_key);
+        // 5. Sign (EIP-155 Legacy)
+        let unsigned_rlp = tx.rlp_encode_unsigned(chain_id);
+        let message_hash = keccak256(&unsigned_rlp);
 
-    let (recovery_id, rsig) = signature.serialize_compact();
-    let rid = recovery_id.to_i32() as u64; // 0 or 1
-    tx.r = bytes32_to_u256(&rsig[0..32]);
-    tx.s = bytes32_to_u256(&rsig[32..64]);
-    // EIP-155 => v = rid + 2 * chain_id + 35
-    tx.v = rid + (2 * chain_id) + 35;
+        let msg = secp256k1::Message::from_digest_slice(&message_hash.as_slice())?;
+        let signature = Secp256k1::new().sign_ecdsa_recoverable(&msg, &secret_key);
 
-    // 6. RLP-encode and send
-    let signed_tx_rlp = tx.rlp_encode_signed();
-    let raw_tx_hex = format!("0x{}", hex::encode(signed_tx_rlp));
-    println!("Raw signed TX: {}", raw_tx_hex);
+        let (recovery_id, rsig) = signature.serialize_compact();
+        let rid = recovery_id.to_i32() as u64; // 0 or 1
+        tx.r = bytes32_to_u256(&rsig[0..32]);
+        tx.s = bytes32_to_u256(&rsig[32..64]);
+        // EIP-155 => v = rid + 2 * chain_id + 35
+        tx.v = rid + (2 * chain_id) + 35;
+
+        // 6. RLP-encode and send
+        let signed_tx_rlp = tx.rlp_encode_signed();
+        let raw_tx_hex = format!("0x{}", hex::encode(signed_tx_rlp));
+        println!("Raw signed TX: {}", raw_tx_hex);
+        raw_tx_hex
+    } else if tx_type == "1559" {
+        let mut tx = Eip1559Transaction {
+            chain_id: chain_id,
+            nonce: nonce_value,
+            max_priority_fee_per_gas: U256::from(1_000_000_000u64),
+            max_fee_per_gas: U256::from(1_000_000_000u64),
+            gas_limit: U256::from(21000u64),
+            to: Some(Address::from_slice(
+                &hex_decode("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabb").unwrap(),
+            )),
+            value: U256::from(1_000_000_000_000_000_000u64), // 1 ETH in wei,
+            data: vec![],
+            access_list: vec![],
+            y_parity: 0,
+            r: U256::ZERO,
+            s: U256::ZERO,
+        };
+        let unsigned_rlp = tx.rlp_encode_unsigned();
+        let message_hash = keccak256(&unsigned_rlp);
+        let msg = secp256k1::Message::from_digest_slice(&message_hash.as_slice())?;
+        let signature = Secp256k1::new().sign_ecdsa_recoverable(&msg, &secret_key);
+
+        let (recovery_id, rsig) = signature.serialize_compact();
+        tx.r = bytes32_to_u256(&rsig[..32]);
+        tx.s = bytes32_to_u256(&rsig[32..64]);
+        tx.y_parity = recovery_id.to_i32() as u8; // 0 or 1
+        let signed_bytes = tx.rlp_encode_signed();
+        let raw_tx_hex = format!("0x{}", hex::encode(signed_bytes));
+        println!("Raw signed TX: {}", raw_tx_hex);
+        raw_tx_hex
+    } else {
+        panic!("bad");
+    };
 
     let send_params = [raw_tx_hex];
     let send_req = JsonRpcRequest {
