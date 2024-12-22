@@ -4,7 +4,7 @@ use hex::decode as hex_decode;
 use reqwest::Client;
 use secp256k1::{Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
-use std::error::Error;
+use std::{error::Error, ops::Add};
 use tokio::main;
 
 #[derive(Serialize)]
@@ -337,12 +337,38 @@ fn bytes32_to_u256(bytes: &[u8]) -> U256 {
     U256::from_be_bytes::<32>(bytes.try_into().expect("slice must be 32 bytes"))
 }
 
-#[main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    // ------------------------------------------------
-    // 1. Parse the private key from hex
-    // ------------------------------------------------
-    let private_key_hex = "0x0fad2ca996a24d116097c481c27a59652a3d3611dfed64d8f9bf86568b1f431d";
+pub async fn get_nonce(url: &str, addr: Address) -> U256 {
+    let client = Client::new();
+
+    let params = [format!("0x{:x}", addr), "latest".to_string()];
+    let req = JsonRpcRequest {
+        jsonrpc: "2.0",
+        method: "eth_getTransactionCount",
+        params: &params,
+        id: 1,
+    };
+    let resp: JsonRpcResponse<String> = client
+        .post(url)
+        .json(&req)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let nonce_hex = resp
+        .result
+        .ok_or("No result from getTransactionCount")
+        .unwrap();
+    let nonce_value =
+        U256::from_str_radix(nonce_hex.trim_start_matches("0x"), 16).unwrap_or_default();
+
+    println!("Nonce: {}", nonce_value);
+    nonce_value
+}
+
+pub fn address_from_pkey(private_key_hex: &str) -> Address {
     let pk_nostrip = private_key_hex.trim_start_matches("0x");
     let pk_bytes = hex_decode(pk_nostrip).unwrap();
     let secret_key = SecretKey::from_slice(&pk_bytes).expect("invalid private key bytes");
@@ -353,24 +379,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let hash = keccak256(&pubkey_uncompressed[1..]); // skip the 0x04
     let from_addr = Address::from_slice(&hash[12..]); // last 20 bytes
+    from_addr
+}
+
+#[main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    // ------------------------------------------------
+    // 1. Parse the private key from hex
+    // ------------------------------------------------
+    let private_key_hex = "0x0fad2ca996a24d116097c481c27a59652a3d3611dfed64d8f9bf86568b1f431d";
+    let pk_nostrip = private_key_hex.trim_start_matches("0x");
+    let pk_bytes = hex_decode(pk_nostrip).unwrap();
+    let secret_key = SecretKey::from_slice(&pk_bytes).expect("invalid private key bytes");
+
+    let from_addr = address_from_pkey(private_key_hex);
     println!("From Address: 0x{:x}", from_addr);
 
     // 3. Get nonce from local Geth (http://localhost:8545)
     let client = Client::new();
     let url = "http://127.0.0.1:8848";
 
-    let params = [format!("0x{:x}", from_addr), "latest".to_string()];
-    let req = JsonRpcRequest {
-        jsonrpc: "2.0",
-        method: "eth_getTransactionCount",
-        params: &params,
-        id: 1,
-    };
-    let resp: JsonRpcResponse<String> = client.post(url).json(&req).send().await?.json().await?;
-
-    let nonce_hex = resp.result.ok_or("No result from getTransactionCount")?;
-    let nonce_value =
-        U256::from_str_radix(nonce_hex.trim_start_matches("0x"), 16).unwrap_or_default();
+    let nonce_value = get_nonce(url, from_addr).await;
 
     println!("Nonce: {}", nonce_value);
 
@@ -442,13 +471,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("Raw signed TX: {}", raw_tx_hex);
         raw_tx_hex
     } else if tx_type == "7702" {
-        // TODO: get the nonce correctly.
-        // TODO: setup proper destination.
+        let second_pkey = "0x411bdd63dc116ba53e0e3fbe752ba21f869e272d4f544c8d545c617ce43f654e";
+        let second_address = address_from_pkey(&second_pkey);
+        let second_nonce = get_nonce(url, second_address).await;
+
         let authorization = Authorization7702::new(
+            // for all chains.
             0,
-            address!("aCB90B0A0D6715c286C6fc37fA7d4ac753c24D11"),
-            0.try_into().unwrap(),
-            "0x411bdd63dc116ba53e0e3fbe752ba21f869e272d4f544c8d545c617ce43f654e".to_string(),
+            address!("57eEce783E9864189e4a7C0BcF8fe86a56Efb6E1"), // deployed counter contract.
+            second_nonce,
+            second_pkey.to_string(),
         );
         let mut tx = Eip7702Transaction {
             chain_id: chain_id,
