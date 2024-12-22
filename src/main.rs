@@ -4,7 +4,7 @@ use hex::decode as hex_decode;
 use reqwest::Client;
 use secp256k1::{Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
-use std::{error::Error, ops::Add};
+use std::error::Error;
 use tokio::main;
 
 #[derive(Serialize)]
