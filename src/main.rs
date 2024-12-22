@@ -34,7 +34,7 @@ struct LegacyTransaction {
     to: Option<Address>,
     value: U256,
     // data must be string (if vec<u8> then it gets encoded as list..)
-    data: String,
+    data: Vec<u8>,
     v: u64,
     r: U256,
     s: U256,
@@ -49,7 +49,10 @@ impl LegacyTransaction {
         self.gas_limit.encode(&mut buffer);
         self.to.unwrap_or_default().encode(&mut buffer);
         self.value.encode(&mut buffer);
-        self.data.encode(&mut buffer);
+        self.data.as_slice().encode(&mut buffer);
+
+        // EIP-155 includes chain_id, 0, 0 at the end
+
         chain_id.encode(&mut buffer);
         0u8.encode(&mut buffer);
         0u8.encode(&mut buffer);
@@ -63,19 +66,6 @@ impl LegacyTransaction {
         aa.encode(&mut new_buffer);
         new_buffer.append(&mut buffer);
         new_buffer
-
-        // EIP-155 includes chain_id, 0, 0 at the end
-        // let mut stream = rlp::RlpStream::new_list(9);
-        //stream.append(&self.nonce);
-        //stream.append(&self.gas_price);
-        //stream.append(&self.gas_limit);
-        //stream.append(&self.to.unwrap_or_default());
-        //stream.append(&self.value);
-        //stream.append(&self.data);
-        //stream.append(&chain_id);
-        //stream.append(&0u8);
-        //stream.append(&0u8);
-        //stream.out().to_vec()
     }
 
     fn rlp_encode_signed(&self) -> Vec<u8> {
@@ -85,7 +75,7 @@ impl LegacyTransaction {
         self.gas_limit.encode(&mut buffer);
         self.to.unwrap_or_default().encode(&mut buffer);
         self.value.encode(&mut buffer);
-        self.data.encode(&mut buffer);
+        self.data.as_slice().encode(&mut buffer);
         self.v.encode(&mut buffer);
         self.r.encode(&mut buffer);
         self.s.encode(&mut buffer);
@@ -99,18 +89,6 @@ impl LegacyTransaction {
         aa.encode(&mut new_buffer);
         new_buffer.append(&mut buffer);
         new_buffer
-
-        /*let mut stream = rlp::RlpStream::new_list(9);
-        stream.append(&self.nonce);
-        stream.append(&self.gas_price);
-        stream.append(&self.gas_limit);
-        stream.append(&self.to.unwrap_or_default());
-        stream.append(&self.value);
-        stream.append(&self.data);
-        stream.append(&self.v);
-        stream.append(&self.r);
-        stream.append(&self.s);
-        stream.out().to_vec()*/
     }
 }
 
@@ -163,7 +141,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &hex_decode("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
         )),
         value: U256::from(1_000_000_000_000_000_000u64), // 1 ETH in wei
-        data: "".to_string(),
+        data: vec![],
         v: 0,
         r: U256::ZERO,
         s: U256::ZERO,
