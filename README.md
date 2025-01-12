@@ -5,7 +5,6 @@ Example of running 7702 transactions.
 Accounts used:
 
 ## Deployer
-Successfully created new keypair.
 Address:     0x0A265d1d68fD54B09D434de7846d8E631668d99B
 Private key: 0x0fad2ca996a24d116097c481c27a59652a3d3611dfed64d8f9bf86568b1f431d
 
@@ -37,13 +36,15 @@ eth.sendTransaction({from: eth.accounts[0], to: "0x0A265d1d68fD54B09D434de7846d8
 * build & deploy contract: 
 
 ```shell
+cd contracts && git submodule init && git submodule update
+
 forge script script/Counter.s.sol --rpc-url http://localhost:8848 --private-key 0x0fad2ca996a24d116097c481c27a59652a3d3611dfed64d8f9bf86568b1f431d --broadcast
 ```
 
 * run the tool - make sure to paste the address from the script above
 
 ```shell
-cargo run
+cargo run -- --tx-type 7702 --delegate-to 0x4CDEAAD2282782D73534A09528b39A398eD3503c
 ```
 
 It will set the EOA address (0x2d9dcCc30D1687EAd032a6fADC5A25776e433080) to be running the Counter.sol code.
@@ -52,5 +53,5 @@ It will set the EOA address (0x2d9dcCc30D1687EAd032a6fADC5A25776e433080) to be r
 You can check it by calling:
 
 ```shell
-cast call -r http://localhost:8848 0x2d9dcCc30D1687EAd032a6fADC5A25776e433080 "number()"
+cast call -r http://localhost:8848 0x2d9dcCc30D1687EAd032a6fADC5A25776e433080 "sayHello()(string)"
 ```

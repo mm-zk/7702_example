@@ -12,6 +12,10 @@ contract Counter {
         number++;
     }
 
+    function sayHello() public returns (string memory) {
+        return "Hello from 7702 delegation";
+    }
+
     receive() external payable {}
     fallback() external payable {}
     function transferToSender(uint256 amount) external {

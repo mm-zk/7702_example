@@ -1,5 +1,9 @@
-use alloy::primitives::{address, keccak256, Address, U256};
+use alloy::{
+    hex::FromHex,
+    primitives::{keccak256, Address, U256},
+};
 use alloy_rlp::Encodable;
+use clap::Parser;
 use hex::decode as hex_decode;
 use reqwest::Client;
 use secp256k1::{Secp256k1, SecretKey};
@@ -17,8 +21,6 @@ struct JsonRpcRequest<'a, T> {
 
 #[derive(Deserialize)]
 struct JsonRpcResponse<T> {
-    jsonrpc: String,
-    id: u64,
     #[serde(default)]
     result: Option<T>,
     #[serde(default)]
@@ -103,6 +105,7 @@ struct Eip1559Transaction {
     to: Option<Address>,
     value: U256,
     data: Vec<u8>,
+    #[allow(dead_code)]
     access_list: Vec<(Address, Vec<U256>)>, // or a custom struct
 
     // Signature
@@ -184,6 +187,7 @@ struct Eip7702Transaction {
     to: Option<Address>,
     value: U256,
     data: Vec<u8>,
+    #[allow(dead_code)]
     access_list: Vec<(Address, Vec<U256>)>, // or a custom struct
     authorization_list: Vec<Authorization7702>,
 
@@ -382,8 +386,19 @@ pub fn address_from_pkey(private_key_hex: &str) -> Address {
     from_addr
 }
 
+#[derive(clap::Parser)]
+pub struct Args {
+    #[arg(short, long)]
+    tx_type: String,
+
+    #[arg(short, long)]
+    delegate_to: Option<String>,
+}
+
 #[main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let args = Args::parse();
+
     // ------------------------------------------------
     // 1. Parse the private key from hex
     // ------------------------------------------------
@@ -401,9 +416,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let nonce_value = get_nonce(url, from_addr).await;
 
-    println!("Nonce: {}", nonce_value);
-
-    let tx_type = "7702";
+    let tx_type = args.tx_type;
     let chain_id = 1337;
 
     let raw_tx_hex = if tx_type == "legacy" {
@@ -475,20 +488,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let second_address = address_from_pkey(&second_pkey);
         let second_nonce = get_nonce(url, second_address).await;
 
+        let delegate_to = Address::from_hex(
+            args.delegate_to
+                .unwrap_or("0x4F747741EF10551969F9688a8264FC6bb337fA5f".to_string()),
+        )
+        .unwrap();
+
+        // Authorization is 'type 5' object.
         let authorization = Authorization7702::new(
             // for all chains.
             0,
-            address!("57eEce783E9864189e4a7C0BcF8fe86a56Efb6E1"), // deployed counter contract.
+            delegate_to, // deployed counter contract.
             second_nonce,
             second_pkey.to_string(),
         );
+
+        // That is put into type '4' transaction.
         let mut tx = Eip7702Transaction {
-            chain_id: chain_id,
+            chain_id,
             nonce: nonce_value,
             max_priority_fee_per_gas: U256::from(1_000_000_000u64),
             max_fee_per_gas: U256::from(1_000_000_000u64),
             // more gas.
             gas_limit: U256::from(46000u64),
+            // It doesn't matter who is the target of this transaction.
             to: Some(Address::from_slice(
                 &hex_decode("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabb").unwrap(),
             )),
