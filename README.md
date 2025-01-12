@@ -55,3 +55,12 @@ You can check it by calling:
 ```shell
 cast call -r http://localhost:8848 0x2d9dcCc30D1687EAd032a6fADC5A25776e433080 "sayHello()(string)"
 ```
+
+And you can also check with cast code:
+
+```shell
+cast code -r http://localhost:8848  0x2d9dcCc30D1687EAd032a6fADC5A25776e433080
+> 0xef01004cdeaad2282782d73534a09528b39a398ed3503c
+```
+
+The `ef01` prefix means that this account is EOA with code now.
